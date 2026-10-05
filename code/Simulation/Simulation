@@ -1,0 +1,1882 @@
+import math
+import os
+import random
+
+import numpy as np
+import pandas as pd
+
+import paramvarying as param
+
+
+# =========================================================
+# DETECTOR DIMENSIONS
+# =========================================================
+
+size_sourcePlane = param.size_sourcePlane
+size_scatterPlane = param.size_scatterPlane
+size_absorbPlane = param.size_absorbPlane
+
+
+# =========================================================
+# VALIDATE THE MULTIPLE-SUBSOURCE SETTINGS
+# =========================================================
+
+def validate_simulation_settings():
+    """
+    Validate all settings required for exactly two spherical subsources.
+
+    Returns
+    -------
+    tuple
+        (
+            min_subsources,
+            max_subsources,
+            min_diameter,
+            max_diameter,
+            minimum_clearance,
+            max_placement_attempts,
+            intensity_criterion
+        )
+    """
+
+    min_subsources = param.minSubSources
+    max_subsources = param.maxSubSources
+
+    if not isinstance(min_subsources, int):
+        raise TypeError(
+            "minSubSources must be an integer."
+        )
+
+    if not isinstance(max_subsources, int):
+        raise TypeError(
+            "maxSubSources must be an integer."
+        )
+
+    if min_subsources != 2 or max_subsources != 2:
+        raise ValueError(
+            "This simulation is configured for exactly two subsources. "
+            "Set both minSubSources and maxSubSources to 2."
+        )
+
+    min_diameter_value = float(
+        param.minSphereDiameter
+    )
+
+    max_diameter_value = float(
+        param.maxSphereDiameter
+    )
+
+    if not np.isfinite(min_diameter_value):
+        raise ValueError(
+            "minSphereDiameter must be finite."
+        )
+
+    if not np.isfinite(max_diameter_value):
+        raise ValueError(
+            "maxSphereDiameter must be finite."
+        )
+
+    if not min_diameter_value.is_integer():
+        raise ValueError(
+            "minSphereDiameter must be an integer because only "
+            "integer diameters are allowed."
+        )
+
+    if not max_diameter_value.is_integer():
+        raise ValueError(
+            "maxSphereDiameter must be an integer because only "
+            "integer diameters are allowed."
+        )
+
+    min_diameter = int(min_diameter_value)
+    max_diameter = int(max_diameter_value)
+
+    if min_diameter <= 0:
+        raise ValueError(
+            "minSphereDiameter must be greater than 0 mm."
+        )
+
+    if max_diameter < min_diameter:
+        raise ValueError(
+            "maxSphereDiameter must be greater than or equal to "
+            "minSphereDiameter."
+        )
+
+    source_width_x = (
+        param.source_x_max - param.source_x_min
+    )
+
+    source_width_y = (
+        param.source_y_max - param.source_y_min
+    )
+
+    source_width_z = (
+        param.source_z_max - param.source_z_min
+    )
+
+    if (
+        source_width_x <= 0
+        or source_width_y <= 0
+        or source_width_z <= 0
+    ):
+        raise ValueError(
+            "The configured source region must have positive width "
+            "in x, y, and z."
+        )
+
+    maximum_possible_diameter = min(
+        source_width_x,
+        source_width_y,
+        source_width_z
+    )
+
+    if max_diameter > maximum_possible_diameter:
+        raise ValueError(
+            f"maxSphereDiameter = {max_diameter} mm is too large. "
+            f"The maximum diameter that can fit completely inside "
+            f"the configured source region is "
+            f"{maximum_possible_diameter} mm."
+        )
+
+    minimum_clearance = float(
+        param.minimumSubSourceClearance
+    )
+
+    if not np.isfinite(minimum_clearance):
+        raise ValueError(
+            "minimumSubSourceClearance must be finite."
+        )
+
+    if minimum_clearance < 0.0:
+        raise ValueError(
+            "minimumSubSourceClearance cannot be negative."
+        )
+
+    max_placement_attempts = param.maxPlacementAttempts
+
+    if not isinstance(max_placement_attempts, int):
+        raise TypeError(
+            "maxPlacementAttempts must be an integer."
+        )
+
+    if max_placement_attempts <= 0:
+        raise ValueError(
+            "maxPlacementAttempts must be greater than 0."
+        )
+
+    intensity_criterion = param.intensityCriterion
+
+    allowed_criteria = {
+        "criterion1_equal_intensity",
+        "criterion2_graded_intensity"
+    }
+
+    if intensity_criterion not in allowed_criteria:
+        raise ValueError(
+            "intensityCriterion must be either "
+            "'criterion1_equal_intensity' or "
+            "'criterion2_graded_intensity'."
+        )
+
+    return (
+        min_subsources,
+        max_subsources,
+        min_diameter,
+        max_diameter,
+        minimum_clearance,
+        max_placement_attempts,
+        intensity_criterion
+    )
+
+
+# =========================================================
+# RANDOM INTEGER DIAMETERS FOR EXACTLY TWO SUBSOURCES
+# =========================================================
+
+def generate_integer_subsource_diameters(
+    number_of_subsources,
+    min_diameter,
+    max_diameter
+):
+    """
+    Generate one integer diameter for every subsource.
+
+    For this study number_of_subsources is always 2.
+
+    Diameters are sampled independently from a discrete uniform
+    distribution over all integer values in the inclusive interval
+    [min_diameter, max_diameter].
+    """
+
+    diameters = np.random.randint(
+        low=min_diameter,
+        high=max_diameter + 1,
+        size=number_of_subsources
+    ).astype(np.int32)
+
+    return diameters
+
+
+# =========================================================
+# VALID INTEGER-CENTRE LIMITS FOR ONE SPHERE
+# =========================================================
+
+def get_valid_center_limits(
+    sphere_radius
+):
+    """
+    Return integer centre limits that keep the complete sphere inside
+    the configured source region.
+    """
+
+    center_x_min = math.ceil(
+        param.source_x_min + sphere_radius
+    )
+
+    center_x_max = math.floor(
+        param.source_x_max - sphere_radius
+    )
+
+    center_y_min = math.ceil(
+        param.source_y_min + sphere_radius
+    )
+
+    center_y_max = math.floor(
+        param.source_y_max - sphere_radius
+    )
+
+    center_z_min = math.ceil(
+        param.source_z_min + sphere_radius
+    )
+
+    center_z_max = math.floor(
+        param.source_z_max - sphere_radius
+    )
+
+    if (
+        center_x_min > center_x_max
+        or center_y_min > center_y_max
+        or center_z_min > center_z_max
+    ):
+        raise ValueError(
+            "No valid integer centre exists for a sphere with "
+            f"radius {sphere_radius} mm."
+        )
+
+    return (
+        center_x_min,
+        center_x_max,
+        center_y_min,
+        center_y_max,
+        center_z_min,
+        center_z_max
+    )
+
+
+# =========================================================
+# CHECK WHETHER TWO SUBSOURCES OVERLAP
+# =========================================================
+
+def is_non_overlapping_candidate(
+    candidate_center,
+    candidate_radius,
+    existing_centers,
+    existing_radii,
+    minimum_clearance
+):
+    """
+    Check whether a candidate subsource is separated from all already
+    placed subsources belonging to the same overall source.
+
+    Spheres are allowed to touch when minimum_clearance == 0.0,
+    but they are never allowed to overlap.
+    """
+
+    for existing_center, existing_radius in zip(
+        existing_centers,
+        existing_radii
+    ):
+        center_distance = np.linalg.norm(
+            candidate_center - existing_center
+        )
+
+        minimum_allowed_distance = (
+            candidate_radius
+            + existing_radius
+            + minimum_clearance
+        )
+
+        if center_distance < (
+            minimum_allowed_distance - 1e-12
+        ):
+            return False
+
+    return True
+
+
+# =========================================================
+# GENERATE NON-OVERLAPPING SUBSOURCE CENTRES
+# =========================================================
+
+def generate_subsource_centers(
+    subsource_radii,
+    minimum_clearance,
+    max_placement_attempts
+):
+    """
+    Generate uniformly sampled integer XYZ centres for all subsources
+    belonging to one overall source.
+
+    The complete sphere of every subsource remains inside the allowed
+    source region. Candidate centres are drawn uniformly from the valid
+    integer coordinate range for that sphere. A candidate is rejected
+    if it overlaps a previously placed subsource of the same overall
+    source.
+
+    Larger spheres are placed first because they have fewer valid
+    positions and are harder to place.
+
+    Returns
+    -------
+    numpy.ndarray
+        Shape (number_of_subsources, 3). Rows remain indexed by the
+        original subsource IDs.
+    """
+
+    number_of_subsources = len(
+        subsource_radii
+    )
+
+    selected_centers = np.zeros(
+        (number_of_subsources, 3),
+        dtype=np.float64
+    )
+
+    placed_centers = []
+    placed_radii = []
+
+    placement_order = np.argsort(
+        -np.asarray(subsource_radii)
+    )
+
+    for subsource_index in placement_order:
+        radius = float(
+            subsource_radii[subsource_index]
+        )
+
+        (
+            center_x_min,
+            center_x_max,
+            center_y_min,
+            center_y_max,
+            center_z_min,
+            center_z_max
+        ) = get_valid_center_limits(
+            sphere_radius=radius
+        )
+
+        selected_center = None
+
+        for _ in range(max_placement_attempts):
+            candidate_center = np.asarray(
+                [
+                    random.randint(
+                        center_x_min,
+                        center_x_max
+                    ),
+                    random.randint(
+                        center_y_min,
+                        center_y_max
+                    ),
+                    random.randint(
+                        center_z_min,
+                        center_z_max
+                    )
+                ],
+                dtype=np.float64
+            )
+
+            if is_non_overlapping_candidate(
+                candidate_center=candidate_center,
+                candidate_radius=radius,
+                existing_centers=placed_centers,
+                existing_radii=placed_radii,
+                minimum_clearance=minimum_clearance
+            ):
+                selected_center = candidate_center
+                break
+
+        if selected_center is None:
+            raise RuntimeError(
+                "Could not place all subsources without overlap after "
+                f"{max_placement_attempts} attempts for one subsource. "
+                "Reduce the sphere diameters, increase the source "
+                "region, or increase maxPlacementAttempts."
+            )
+
+        selected_centers[
+            subsource_index
+        ] = selected_center
+
+        placed_centers.append(
+            selected_center
+        )
+
+        placed_radii.append(
+            radius
+        )
+
+    return selected_centers
+
+
+# =========================================================
+# VERIFY ONE OVERALL SOURCE GEOMETRY
+# =========================================================
+
+def verify_subsource_geometry(
+    subsource_centers,
+    subsource_radii,
+    minimum_clearance
+):
+    """
+    Verify boundaries and pairwise non-overlap for one overall source.
+    """
+
+    number_of_subsources = len(
+        subsource_radii
+    )
+
+    for i in range(number_of_subsources):
+        center = subsource_centers[i]
+        radius = float(
+            subsource_radii[i]
+        )
+
+        if center[0] - radius < param.source_x_min - 1e-12:
+            raise RuntimeError(
+                "A subsource crosses source_x_min."
+            )
+
+        if center[0] + radius > param.source_x_max + 1e-12:
+            raise RuntimeError(
+                "A subsource crosses source_x_max."
+            )
+
+        if center[1] - radius < param.source_y_min - 1e-12:
+            raise RuntimeError(
+                "A subsource crosses source_y_min."
+            )
+
+        if center[1] + radius > param.source_y_max + 1e-12:
+            raise RuntimeError(
+                "A subsource crosses source_y_max."
+            )
+
+        if center[2] - radius < param.source_z_min - 1e-12:
+            raise RuntimeError(
+                "A subsource crosses source_z_min."
+            )
+
+        if center[2] + radius > param.source_z_max + 1e-12:
+            raise RuntimeError(
+                "A subsource crosses source_z_max."
+            )
+
+    for i in range(number_of_subsources):
+        for j in range(i + 1, number_of_subsources):
+            center_distance = np.linalg.norm(
+                subsource_centers[i]
+                - subsource_centers[j]
+            )
+
+            minimum_allowed_distance = (
+                float(subsource_radii[i])
+                + float(subsource_radii[j])
+                + minimum_clearance
+            )
+
+            if center_distance < (
+                minimum_allowed_distance - 1e-12
+            ):
+                raise RuntimeError(
+                    "Two subsources belonging to the same overall "
+                    "source overlap."
+                )
+
+
+# =========================================================
+# GENERATE A RANDOM POINT INSIDE A SOLID SPHERE
+# =========================================================
+
+def generate_point_inside_sphere(
+    sphere_center,
+    sphere_radius
+):
+    """
+    Generate one random point uniformly inside the volume of a solid
+    sphere.
+
+    A new emission point is generated for every detector event.
+    """
+
+    direction = np.random.normal(
+        loc=0.0,
+        scale=1.0,
+        size=3
+    )
+
+    direction_norm = np.linalg.norm(
+        direction
+    )
+
+    while direction_norm == 0.0:
+        direction = np.random.normal(
+            loc=0.0,
+            scale=1.0,
+            size=3
+        )
+
+        direction_norm = np.linalg.norm(
+            direction
+        )
+
+    unit_direction = (
+        direction / direction_norm
+    )
+
+    # Cube-root radial sampling gives a uniform distribution throughout
+    # the complete three-dimensional sphere volume.
+    radial_distance = (
+        sphere_radius
+        * np.random.random() ** (1.0 / 3.0)
+    )
+
+    source_point = (
+        sphere_center
+        + unit_direction * radial_distance
+    )
+
+    distance_from_center = np.linalg.norm(
+        source_point - sphere_center
+    )
+
+    if distance_from_center > sphere_radius + 1e-10:
+        raise RuntimeError(
+            "Generated emission point lies outside its subsource sphere."
+        )
+
+    return source_point
+
+
+# =========================================================
+# CRITERION 1: EQUAL VOLUMETRIC INTENSITY
+# =========================================================
+
+def calculate_equal_intensity_event_counts(
+    no_of_events,
+    subsource_diameters
+):
+    """
+    Criterion 1.
+
+    Allocate events according to sphere volume so that both subsources
+    have approximately the same volumetric event density / intensity.
+
+    Since sphere volume is proportional to diameter^3:
+
+        N_i proportional to d_i^3
+
+    Example for 100 events:
+        d0 = 2 mm
+        d1 = 5 mm
+
+        volume weights = 2^3 : 5^3 = 8 : 125
+
+        approximately:
+        subsource 0 -> 6 events
+        subsource 1 -> 94 events
+
+    For equal diameters the split is exactly equal when no_of_events is
+    even.
+    """
+
+    if len(subsource_diameters) != 2:
+        raise ValueError(
+            "Criterion 1 is defined here for exactly two subsources."
+        )
+
+    if no_of_events < 2:
+        raise ValueError(
+            "At least 2 events are required so both subsources can "
+            "receive at least one event."
+        )
+
+    diameters = np.asarray(
+        subsource_diameters,
+        dtype=np.float64
+    )
+
+    volume_weights = diameters ** 3
+
+    raw_counts = (
+        no_of_events
+        * volume_weights
+        / volume_weights.sum()
+    )
+
+    counts = np.floor(
+        raw_counts
+    ).astype(np.int32)
+
+    # Guarantee that both subsources are represented.
+    counts[counts < 1] = 1
+
+    # Correct the total after flooring / minimum-count enforcement.
+    while counts.sum() < no_of_events:
+        fractional_parts = (
+            raw_counts - np.floor(raw_counts)
+        )
+
+        # Prefer the subsource with the largest remaining fraction.
+        # In ties, numpy argmax returns the first one.
+        candidate_order = np.argsort(
+            -fractional_parts
+        )
+
+        added = False
+
+        for index in candidate_order:
+            counts[index] += 1
+            added = True
+            break
+
+        if not added:
+            raise RuntimeError(
+                "Could not complete Criterion 1 event allocation."
+            )
+
+    while counts.sum() > no_of_events:
+        removable = np.where(
+            counts > 1
+        )[0]
+
+        if removable.size == 0:
+            raise RuntimeError(
+                "Could not reduce Criterion 1 event allocation while "
+                "keeping at least one event per subsource."
+            )
+
+        # Remove from the subsource whose allocated count exceeds its
+        # ideal raw count by the largest amount.
+        excess = (
+            counts[removable]
+            - raw_counts[removable]
+        )
+
+        remove_index = removable[
+            np.argmax(excess)
+        ]
+
+        counts[remove_index] -= 1
+
+    if counts.sum() != no_of_events:
+        raise RuntimeError(
+            "Criterion 1 event counts do not sum to noOfEvents."
+        )
+
+    if np.any(counts <= 0):
+        raise RuntimeError(
+            "Criterion 1 produced a zero-event subsource."
+        )
+
+    return counts
+
+
+# =========================================================
+# CRITERION 2: GRADED INTENSITY FROM DIAMETER ONLY
+# =========================================================
+
+def calculate_graded_intensity_event_counts(
+    no_of_events,
+    subsource_diameters
+):
+    """
+    Criterion 2.
+
+    Split the events equally between the two subsources.
+
+    Because the event counts are equal, differences in sphere volume
+    automatically create differences in volumetric event density /
+    intensity.
+
+    Therefore:
+        - different diameters -> different intensity densities
+        - equal diameters     -> equal intensity densities
+
+    Example for 100 events:
+        subsource 0 -> 50 events
+        subsource 1 -> 50 events
+
+    The function requires an even no_of_events value so the split can
+    be exactly equal.
+    """
+
+    if len(subsource_diameters) != 2:
+        raise ValueError(
+            "Criterion 2 is defined here for exactly two subsources."
+        )
+
+    if no_of_events % 2 != 0:
+        raise ValueError(
+            "Criterion 2 requires an even noOfEvents value because "
+            "the two subsources must receive exactly the same number "
+            "of events."
+        )
+
+    half_events = no_of_events // 2
+
+    counts = np.asarray(
+        [
+            half_events,
+            half_events
+        ],
+        dtype=np.int32
+    )
+
+    return counts
+
+
+# =========================================================
+# BUILD EVENT-TO-SUBSOURCE ASSIGNMENTS
+# =========================================================
+
+def generate_event_subsource_assignments(
+    no_of_events,
+    subsource_diameters,
+    intensity_criterion
+):
+    """
+    Generate the subsource ID for every event according to the selected
+    intensity criterion.
+
+    Criterion 1:
+        Counts are proportional to d^3.
+
+    Criterion 2:
+        Counts are exactly equal.
+
+    After the counts are generated, the event order is shuffled so the
+    CSV does not contain all events from one subsource followed by all
+    events from the other.
+    """
+
+    if intensity_criterion == "criterion1_equal_intensity":
+        event_counts = (
+            calculate_equal_intensity_event_counts(
+                no_of_events=no_of_events,
+                subsource_diameters=subsource_diameters
+            )
+        )
+
+    elif intensity_criterion == "criterion2_graded_intensity":
+        event_counts = (
+            calculate_graded_intensity_event_counts(
+                no_of_events=no_of_events,
+                subsource_diameters=subsource_diameters
+            )
+        )
+
+    else:
+        raise ValueError(
+            "Unknown intensity criterion."
+        )
+
+    assignments = np.concatenate(
+        [
+            np.full(
+                event_counts[0],
+                0,
+                dtype=np.int32
+            ),
+            np.full(
+                event_counts[1],
+                1,
+                dtype=np.int32
+            )
+        ]
+    )
+
+    np.random.shuffle(
+        assignments
+    )
+
+    if assignments.size != no_of_events:
+        raise RuntimeError(
+            "The generated event assignments do not contain exactly "
+            "noOfEvents entries."
+        )
+
+    return assignments, event_counts
+
+
+# =========================================================
+# VERIFY INTENSITY-CRITERION ALLOCATION
+# =========================================================
+
+def verify_intensity_allocation(
+    subsource_diameters,
+    event_counts,
+    intensity_criterion,
+    no_of_events
+):
+    """
+    Verify that the event allocation follows the selected criterion.
+    """
+
+    diameters = np.asarray(
+        subsource_diameters,
+        dtype=np.float64
+    )
+
+    counts = np.asarray(
+        event_counts,
+        dtype=np.int32
+    )
+
+    if counts.sum() != no_of_events:
+        raise RuntimeError(
+            "Event allocation does not sum to noOfEvents."
+        )
+
+    if intensity_criterion == "criterion1_equal_intensity":
+        expected_counts = (
+            calculate_equal_intensity_event_counts(
+                no_of_events=no_of_events,
+                subsource_diameters=diameters
+            )
+        )
+
+        if not np.array_equal(
+            counts,
+            expected_counts
+        ):
+            raise RuntimeError(
+                "Criterion 1 event allocation does not match the "
+                "volume-compensated expected counts."
+            )
+
+    elif intensity_criterion == "criterion2_graded_intensity":
+        if counts[0] != counts[1]:
+            raise RuntimeError(
+                "Criterion 2 requires exactly equal event counts for "
+                "the two subsources."
+            )
+
+        # Explicitly guarantee the user's requested equal-diameter case.
+        if diameters[0] == diameters[1]:
+            if counts[0] != counts[1]:
+                raise RuntimeError(
+                    "Equal-diameter subsources must have equal event "
+                    "counts in Criterion 2."
+                )
+
+
+# =========================================================
+# MAIN SIMULATION
+# =========================================================
+
+def genSimEvents(
+    noOfSources,
+    noOfEvents
+):
+    """
+    Generate detector simulations with exactly two spherical subsources.
+
+    COMMON GEOMETRY
+    ---------------
+    Every overall source contains exactly two spherical subsources.
+
+    Every subsource has:
+        - its own subsource ID,
+        - one integer diameter from 2 to 5 mm,
+        - one integer XYZ centre,
+        - no overlap with the other subsource.
+
+    INTENSITY CRITERION 1
+    ---------------------
+    intensityCriterion = "criterion1_equal_intensity"
+
+    Events are allocated according to sphere volume:
+
+        N_i proportional to d_i^3
+
+    Therefore, larger spheres receive more events so that both
+    subsources have approximately the same volumetric event density.
+
+    INTENSITY CRITERION 2
+    ---------------------
+    intensityCriterion = "criterion2_graded_intensity"
+
+    Both subsources receive exactly the same number of events.
+
+    Therefore, different diameters naturally produce different
+    volumetric event densities. Equal diameters naturally produce the
+    same event density.
+
+    All original detector-plane generation, scattering-angle
+    calculation, electron-energy calculation, and scattering-angle
+    uncertainty calculation are preserved.
+    """
+
+    # =====================================================
+    # INPUT VALIDATION
+    # =====================================================
+
+    if not isinstance(noOfSources, int):
+        raise TypeError(
+            "noOfSources must be an integer."
+        )
+
+    if not isinstance(noOfEvents, int):
+        raise TypeError(
+            "noOfEvents must be an integer."
+        )
+
+    if noOfSources <= 0:
+        raise ValueError(
+            "noOfSources must be greater than 0."
+        )
+
+    if noOfEvents <= 0:
+        raise ValueError(
+            "noOfEvents must be greater than 0."
+        )
+
+    (
+        min_subsources,
+        max_subsources,
+        min_diameter,
+        max_diameter,
+        minimum_clearance,
+        max_placement_attempts,
+        intensity_criterion
+    ) = validate_simulation_settings()
+
+    number_of_subsources = 2
+
+    if noOfEvents < number_of_subsources:
+        raise ValueError(
+            "noOfEvents must be at least 2 so both subsources can "
+            "appear in the generated event data."
+        )
+
+    if (
+        intensity_criterion == "criterion2_graded_intensity"
+        and noOfEvents % 2 != 0
+    ):
+        raise ValueError(
+            "Criterion 2 requires an even noOfEvents value so the two "
+            "subsources can receive exactly equal event counts."
+        )
+
+    # =====================================================
+    # RANDOM SEEDS
+    # =====================================================
+
+    if param.randomSeed is not None:
+        random.seed(
+            param.randomSeed
+        )
+
+        np.random.seed(
+            param.randomSeed
+        )
+
+    # =====================================================
+    # PREALLOCATE COMPLETE EVENT ARRAY
+    # =====================================================
+
+    total_events = (
+        noOfSources * noOfEvents
+    )
+
+    print(
+        "Number of overall sources:",
+        noOfSources
+    )
+
+    print(
+        "Events per overall source:",
+        noOfEvents
+    )
+
+    print(
+        "Subsources per overall source:",
+        number_of_subsources
+    )
+
+    print(
+        "Allowed integer subsource diameters:",
+        f"{min_diameter} to {max_diameter} mm"
+    )
+
+    print(
+        "Intensity criterion:",
+        intensity_criterion
+    )
+
+    print(
+        "Minimum subsource clearance:",
+        f"{minimum_clearance} mm"
+    )
+
+    print(
+        "Total number of event rows:",
+        total_events
+    )
+
+    # Column positions:
+    #
+    #  0 = source_id
+    #  1 = event_id
+    #  2 = number_of_subsources
+    #  3 = subsource_id
+    #  4 = subsource_center_x
+    #  5 = subsource_center_y
+    #  6 = subsource_center_z
+    #  7 = subsource_diameter
+    #  8 = source_x
+    #  9 = source_y
+    # 10 = source_z
+    # 11 = scat_x
+    # 12 = scat_y
+    # 13 = scat_z
+    # 14 = absorb_x
+    # 15 = absorb_y
+    # 16 = absorb_z
+    # 17 = theta
+    # 18 = e_energy
+
+    events = np.zeros(
+        (total_events, 19),
+        dtype=np.float64
+    )
+
+    k = 0
+
+    generated_diameters = []
+    all_event_count_pairs = []
+
+    # =====================================================
+    # LOOP THROUGH EVERY OVERALL SOURCE
+    # =====================================================
+
+    for source_id in range(noOfSources):
+
+        # -------------------------------------------------
+        # Exactly two subsources are used for every source.
+        # -------------------------------------------------
+
+        number_of_subsources = 2
+
+        # -------------------------------------------------
+        # Give both subsources their own random INTEGER
+        # diameter from 2 to 5 mm.
+        # -------------------------------------------------
+
+        subsource_diameters = (
+            generate_integer_subsource_diameters(
+                number_of_subsources=number_of_subsources,
+                min_diameter=min_diameter,
+                max_diameter=max_diameter
+            )
+        )
+
+        subsource_radii = (
+            subsource_diameters.astype(np.float64)
+            / 2.0
+        )
+
+        generated_diameters.extend(
+            subsource_diameters.tolist()
+        )
+
+        # -------------------------------------------------
+        # Randomly and uniformly position the two subsources
+        # in valid integer 3D locations, rejecting overlap.
+        # -------------------------------------------------
+
+        subsource_centers = (
+            generate_subsource_centers(
+                subsource_radii=subsource_radii,
+                minimum_clearance=minimum_clearance,
+                max_placement_attempts=max_placement_attempts
+            )
+        )
+
+        verify_subsource_geometry(
+            subsource_centers=subsource_centers,
+            subsource_radii=subsource_radii,
+            minimum_clearance=minimum_clearance
+        )
+
+        # -------------------------------------------------
+        # Assign events according to the selected criterion.
+        # -------------------------------------------------
+
+        (
+            event_subsource_assignments,
+            event_counts
+        ) = generate_event_subsource_assignments(
+            no_of_events=noOfEvents,
+            subsource_diameters=subsource_diameters,
+            intensity_criterion=intensity_criterion
+        )
+
+        verify_intensity_allocation(
+            subsource_diameters=subsource_diameters,
+            event_counts=event_counts,
+            intensity_criterion=intensity_criterion,
+            no_of_events=noOfEvents
+        )
+
+        all_event_count_pairs.append(
+            (
+                int(event_counts[0]),
+                int(event_counts[1])
+            )
+        )
+
+        # Print progress every 100 overall sources.
+        if (
+            source_id % 100 == 0
+            or source_id == noOfSources - 1
+        ):
+            diameter_text = ", ".join(
+                str(int(value))
+                for value in subsource_diameters
+            )
+
+            event_count_text = ", ".join(
+                str(int(value))
+                for value in event_counts
+            )
+
+            print(
+                f"Processing overall source "
+                f"{source_id + 1}/{noOfSources} | "
+                f"diameters = [{diameter_text}] mm | "
+                f"event counts = [{event_count_text}]"
+            )
+
+        # =================================================
+        # LOOP THROUGH EVENTS OF CURRENT OVERALL SOURCE
+        # =================================================
+
+        for event_id in range(noOfEvents):
+
+            subsource_id = int(
+                event_subsource_assignments[event_id]
+            )
+
+            subsource_center = (
+                subsource_centers[subsource_id]
+            )
+
+            subsource_diameter = int(
+                subsource_diameters[subsource_id]
+            )
+
+            subsource_radius = float(
+                subsource_radii[subsource_id]
+            )
+
+            # =============================================
+            # EMISSION POINT INSIDE SELECTED SUBSOURCE
+            # =============================================
+
+            source_point = generate_point_inside_sphere(
+                sphere_center=subsource_center,
+                sphere_radius=subsource_radius
+            )
+
+            source_x = source_point[0]
+            source_y = source_point[1]
+            source_z = source_point[2]
+
+            # =============================================
+            # SCATTERING-PLANE POINT
+            # =============================================
+            #
+            # These ranges are preserved from the original code.
+
+            scatter_x = round(
+                random.uniform(0, 50),
+                0
+            )
+
+            scatter_y = round(
+                random.uniform(0, 50),
+                0
+            )
+
+            scatter_z = round(
+                random.uniform(0, 10),
+                6
+            )
+
+            # =============================================
+            # ABSORPTION-PLANE POINT
+            # =============================================
+            #
+            # These ranges are preserved from the original code.
+
+            absorb_x = round(
+                random.uniform(0, 45),
+                0
+            )
+
+            absorb_y = round(
+                random.uniform(0, 45),
+                0
+            )
+
+            absorb_z = round(
+                random.uniform(100, 110),
+                6
+            )
+
+            scatter_point = np.array(
+                [
+                    scatter_x,
+                    scatter_y,
+                    scatter_z
+                ],
+                dtype=np.float64
+            )
+
+            absorb_point = np.array(
+                [
+                    absorb_x,
+                    absorb_y,
+                    absorb_z
+                ],
+                dtype=np.float64
+            )
+
+            # =============================================
+            # ORIGINAL VECTOR DEFINITIONS
+            # =============================================
+
+            axisVector = (
+                scatter_point
+                - absorb_point
+            )
+
+            sourceVector = (
+                source_point
+                - scatter_point
+            )
+
+            axis_norm = np.linalg.norm(
+                axisVector,
+                ord=2
+            )
+
+            source_norm = np.linalg.norm(
+                sourceVector,
+                ord=2
+            )
+
+            denominator = (
+                axis_norm * source_norm
+            )
+
+            if denominator == 0.0:
+                raise RuntimeError(
+                    f"A zero-length vector occurred for "
+                    f"source_id={source_id}, "
+                    f"event_id={event_id}."
+                )
+
+            # =============================================
+            # ORIGINAL SCATTERING-ANGLE FORMULA
+            # =============================================
+
+            cos_theta = (
+                np.dot(
+                    axisVector,
+                    sourceVector
+                )
+                / denominator
+            )
+
+            cos_theta = np.clip(
+                cos_theta,
+                -1.0,
+                1.0
+            )
+
+            scatterAngle = (
+                math.acos(cos_theta)
+                * 180.0
+                / math.pi
+            )
+
+            # =============================================
+            # ORIGINAL ELECTRON-ENERGY FORMULA
+            # =============================================
+
+            electronEnergy_eV = (
+                param.initialEnergy_eV
+                * (
+                    1
+                    - (
+                        1
+                        / (
+                            (
+                                (
+                                    param.initialEnergy_eV
+                                    / param.eMass_eV
+                                )
+                                * (
+                                    1
+                                    - np.cos(
+                                        scatterAngle
+                                        * math.pi
+                                        / 180.0
+                                    )
+                                )
+                            )
+                            + 1
+                        )
+                    )
+                )
+            )
+
+            # =============================================
+            # ORIGINAL SCATTERING-ANGLE UNCERTAINTY
+            # =============================================
+
+            percentage_uncertainty = 0.1
+
+            sigma = (
+                percentage_uncertainty
+                * scatterAngle
+            )
+
+            scatterAngle_un = np.random.normal(
+                loc=scatterAngle,
+                scale=sigma
+            )
+
+            # The uncertain angle is calculated but not used,
+            # matching the behaviour of the original code.
+            _ = scatterAngle_un
+
+            # =============================================
+            # STORE CURRENT EVENT
+            # =============================================
+
+            events[k, 0] = source_id
+            events[k, 1] = event_id
+            events[k, 2] = number_of_subsources
+            events[k, 3] = subsource_id
+
+            events[k, 4] = subsource_center[0]
+            events[k, 5] = subsource_center[1]
+            events[k, 6] = subsource_center[2]
+
+            events[k, 7] = subsource_diameter
+
+            events[k, 8] = round(
+                source_x,
+                6
+            )
+
+            events[k, 9] = round(
+                source_y,
+                6
+            )
+
+            events[k, 10] = round(
+                source_z,
+                6
+            )
+
+            events[k, 11] = scatter_x
+            events[k, 12] = scatter_y
+            events[k, 13] = scatter_z
+
+            events[k, 14] = absorb_x
+            events[k, 15] = absorb_y
+            events[k, 16] = absorb_z
+
+            events[k, 17] = scatterAngle
+            events[k, 18] = electronEnergy_eV
+
+            k += 1
+
+    # =====================================================
+    # CREATE ONE COMBINED DATAFRAME
+    # =====================================================
+
+    columns = [
+        "source_id",
+        "event_id",
+        "number_of_subsources",
+        "subsource_id",
+        "subsource_center_x",
+        "subsource_center_y",
+        "subsource_center_z",
+        "subsource_diameter",
+        "source_x",
+        "source_y",
+        "source_z",
+        "scat_x",
+        "scat_y",
+        "scat_z",
+        "absorb_x",
+        "absorb_y",
+        "absorb_z",
+        "theta",
+        "e_energy"
+    ]
+
+    df = pd.DataFrame(
+        events,
+        columns=columns
+    )
+
+    integer_columns = [
+        "source_id",
+        "event_id",
+        "number_of_subsources",
+        "subsource_id",
+        "subsource_center_x",
+        "subsource_center_y",
+        "subsource_center_z",
+        "subsource_diameter"
+    ]
+
+    for column in integer_columns:
+        df[column] = (
+            df[column]
+            .astype(np.int32)
+        )
+
+    # =====================================================
+    # FINAL DATASET VERIFICATION
+    # =====================================================
+
+    # Every overall source must contain exactly noOfEvents rows.
+    event_counts_per_source = (
+        df.groupby("source_id")
+        .size()
+    )
+
+    if event_counts_per_source.shape[0] != noOfSources:
+        raise RuntimeError(
+            "The final CSV does not contain the requested number "
+            "of overall sources."
+        )
+
+    if not np.all(
+        event_counts_per_source.to_numpy() == noOfEvents
+    ):
+        raise RuntimeError(
+            "At least one overall source does not contain the "
+            "requested number of events."
+        )
+
+    # Every source must contain exactly two subsources.
+    number_values_per_source = (
+        df.groupby("source_id")[
+            "number_of_subsources"
+        ]
+        .nunique()
+    )
+
+    if not np.all(
+        number_values_per_source.to_numpy() == 1
+    ):
+        raise RuntimeError(
+            "At least one overall source contains inconsistent "
+            "number_of_subsources values."
+        )
+
+    expected_subsource_counts = (
+        df.groupby("source_id")[
+            "number_of_subsources"
+        ]
+        .first()
+        .sort_index()
+        .to_numpy()
+    )
+
+    if not np.all(
+        expected_subsource_counts == 2
+    ):
+        raise RuntimeError(
+            "Every overall source must report exactly two subsources."
+        )
+
+    actual_subsource_counts = (
+        df.groupby("source_id")[
+            "subsource_id"
+        ]
+        .nunique()
+        .sort_index()
+        .to_numpy()
+    )
+
+    if not np.all(
+        actual_subsource_counts == 2
+    ):
+        raise RuntimeError(
+            "At least one overall source does not contain both "
+            "subsource IDs."
+        )
+
+    # Every unique subsource must have exactly one centre and one
+    # integer diameter across all of its event rows.
+    subsource_metadata_checks = (
+        df.groupby(
+            [
+                "source_id",
+                "subsource_id"
+            ]
+        )[
+            [
+                "subsource_center_x",
+                "subsource_center_y",
+                "subsource_center_z",
+                "subsource_diameter"
+            ]
+        ]
+        .nunique()
+    )
+
+    if not np.all(
+        subsource_metadata_checks.to_numpy() == 1
+    ):
+        raise RuntimeError(
+            "At least one subsource has inconsistent centre or "
+            "diameter metadata across its events."
+        )
+
+    stored_diameters = (
+        df[
+            [
+                "source_id",
+                "subsource_id",
+                "subsource_diameter"
+            ]
+        ]
+        .drop_duplicates()[
+            "subsource_diameter"
+        ]
+        .to_numpy(dtype=np.int32)
+    )
+
+    if np.any(
+        stored_diameters < min_diameter
+    ) or np.any(
+        stored_diameters > max_diameter
+    ):
+        raise RuntimeError(
+            "The final CSV contains a subsource diameter outside "
+            "the configured 2-to-5-mm integer range."
+        )
+
+    # Reconstruct each source's unique subsource geometry and verify
+    # pairwise non-overlap one final time.
+    unique_subsources = (
+        df[
+            [
+                "source_id",
+                "subsource_id",
+                "subsource_center_x",
+                "subsource_center_y",
+                "subsource_center_z",
+                "subsource_diameter"
+            ]
+        ]
+        .drop_duplicates()
+        .sort_values(
+            [
+                "source_id",
+                "subsource_id"
+            ]
+        )
+    )
+
+    for source_id, source_geometry in unique_subsources.groupby(
+        "source_id",
+        sort=True
+    ):
+        centers = source_geometry[
+            [
+                "subsource_center_x",
+                "subsource_center_y",
+                "subsource_center_z"
+            ]
+        ].to_numpy(dtype=np.float64)
+
+        radii = (
+            source_geometry[
+                "subsource_diameter"
+            ]
+            .to_numpy(dtype=np.float64)
+            / 2.0
+        )
+
+        verify_subsource_geometry(
+            subsource_centers=centers,
+            subsource_radii=radii,
+            minimum_clearance=minimum_clearance
+        )
+
+    # =====================================================
+    # FINAL CRITERION VERIFICATION FROM THE DATAFRAME
+    # =====================================================
+
+    per_subsource_event_counts = (
+        df.groupby(
+            [
+                "source_id",
+                "subsource_id"
+            ]
+        )
+        .size()
+        .unstack(
+            fill_value=0
+        )
+        .sort_index()
+    )
+
+    if intensity_criterion == "criterion2_graded_intensity":
+        if not np.all(
+            per_subsource_event_counts[0].to_numpy()
+            == per_subsource_event_counts[1].to_numpy()
+        ):
+            raise RuntimeError(
+                "Criterion 2 verification failed: the two subsources "
+                "do not have exactly equal event counts."
+            )
+
+        # Explicit equal-diameter verification.
+        diameter_table = (
+            unique_subsources[
+                [
+                    "source_id",
+                    "subsource_id",
+                    "subsource_diameter"
+                ]
+            ]
+            .pivot(
+                index="source_id",
+                columns="subsource_id",
+                values="subsource_diameter"
+            )
+            .sort_index()
+        )
+
+        equal_diameter_sources = (
+            diameter_table[0]
+            == diameter_table[1]
+        )
+
+        if equal_diameter_sources.any():
+            equal_diameter_ids = (
+                diameter_table.index[
+                    equal_diameter_sources
+                ]
+            )
+
+            if not np.all(
+                per_subsource_event_counts.loc[
+                    equal_diameter_ids,
+                    0
+                ].to_numpy()
+                ==
+                per_subsource_event_counts.loc[
+                    equal_diameter_ids,
+                    1
+                ].to_numpy()
+            ):
+                raise RuntimeError(
+                    "Criterion 2 equal-diameter verification failed."
+                )
+
+    # =====================================================
+    # SAVE ONE COMBINED CSV
+    # =====================================================
+
+    os.makedirs(
+        param.output_dir,
+        exist_ok=True
+    )
+
+    csv_file_name = os.path.join(
+        param.output_dir,
+        param.file_name + param.ext
+    )
+
+    df.to_csv(
+        csv_file_name,
+        index=False
+    )
+
+    # =====================================================
+    # FINAL SUMMARY
+    # =====================================================
+
+    total_subsources = len(
+        unique_subsources
+    )
+
+    print()
+    print(
+        "Simulation completed successfully."
+    )
+
+    print(
+        "Saved combined CSV to:",
+        csv_file_name
+    )
+
+    print(
+        "Intensity criterion:",
+        intensity_criterion
+    )
+
+    print(
+        "Overall sources:",
+        noOfSources
+    )
+
+    print(
+        "Subsources per overall source:",
+        2
+    )
+
+    print(
+        "Events per overall source:",
+        noOfEvents
+    )
+
+    print(
+        "Total event rows:",
+        len(df)
+    )
+
+    print(
+        "Total spherical subsources:",
+        total_subsources
+    )
+
+    generated_diameters_array = np.asarray(
+        generated_diameters,
+        dtype=np.int32
+    )
+
+    print()
+    print(
+        "Final integer-diameter summary:"
+    )
+
+    print(
+        "Minimum generated diameter:",
+        f"{generated_diameters_array.min()} mm"
+    )
+
+    print(
+        "Maximum generated diameter:",
+        f"{generated_diameters_array.max()} mm"
+    )
+
+    print(
+        "Mean generated diameter:",
+        f"{generated_diameters_array.mean():.6f} mm"
+    )
+
+    print(
+        "Unique integer diameters generated:",
+        sorted(
+            np.unique(
+                generated_diameters_array
+            ).tolist()
+        )
+    )
+
+    print()
+    print(
+        "Intensity-allocation examples "
+        "(first 10 overall sources):"
+    )
+
+    for index, pair in enumerate(
+        all_event_count_pairs[:10]
+    ):
+        print(
+            f"  Source {index}: "
+            f"subsource 0 = {pair[0]} events, "
+            f"subsource 1 = {pair[1]} events"
+        )
+
+    if intensity_criterion == "criterion1_equal_intensity":
+        print()
+        print(
+            "Criterion 1 active:"
+        )
+        print(
+            "Event counts are proportional to diameter^3 so the "
+            "two subsources have approximately equal volumetric "
+            "event density / intensity."
+        )
+
+    elif intensity_criterion == "criterion2_graded_intensity":
+        print()
+        print(
+            "Criterion 2 active:"
+        )
+        print(
+            "Both subsources receive exactly the same event count. "
+            "Different diameters therefore produce different "
+            "volumetric event densities / intensities."
+        )
+        print(
+            "Equal diameters automatically produce equal intensity."
+        )
+
+    print()
+    print(
+        "All subsources were verified to remain inside the source "
+        "region and not overlap the other subsource belonging to the "
+        "same overall source."
+    )
+
+    return df, csv_file_name
+
+
+# =========================================================
+# RUN THE PROGRAM
+# =========================================================
+
+if __name__ == "__main__":
+
+    noOfSourcePerImage = (
+        param.noOfSources
+    )
+
+    noOfEventsPerSource = (
+        param.noOfEvents
+    )
+
+    generated_dataframe, generated_csv_path = (
+        genSimEvents(
+            noOfSources=noOfSourcePerImage,
+            noOfEvents=noOfEventsPerSource
+        )
+    )

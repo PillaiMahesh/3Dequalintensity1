@@ -1,0 +1,173 @@
+# As the source, scattering plane, and absorption plane are of different
+# dimensions, each block of the arrays below is 1 mm and multiplied by
+# the respective SiPM dimensions.
+#
+# Scattering-plane SiPMs are 2 x 2 mm.
+# Absorption-plane SiPMs are 6 x 6 mm.
+
+size_sourcePlane = 1
+size_scatterPlane = 2
+size_absorbPlane = 6
+
+
+# =========================================================
+# SIMULATION SETTINGS
+# =========================================================
+
+# Number of OVERALL sources to simulate.
+#
+# Every overall source contains exactly TWO spherical subsources.
+noOfSources = 11000
+
+
+# Number of detector events generated for each OVERALL source.
+#
+# Criterion 1:
+# Events are distributed according to the relative sphere volumes
+# so that both subsources have approximately the same volumetric
+# event density / intensity.
+#
+# Criterion 2:
+# Events are split equally between the two subsources. Therefore,
+# different sphere diameters naturally create different volumetric
+# event densities / intensities. If both diameters are equal, both
+# subsources also have the same intensity.
+noOfEvents = 500
+
+
+# Exactly two spherical subsources are used for every overall source.
+minSubSources = 2
+maxSubSources = 2
+
+
+# Integer diameter range of the spherical subsources in millimetres.
+#
+# Only the following diameters can be generated:
+# 2 mm, 3 mm, 4 mm, 5 mm.
+minSphereDiameter = 5
+maxSphereDiameter = 8
+
+
+# =========================================================
+# INTENSITY CRITERION
+# =========================================================
+
+# Choose ONE of the following:
+#
+# "criterion1_equal_intensity"
+#     Event counts are proportional to sphere volume:
+#         N_i proportional to d_i^3
+#     This compensates for the different sphere sizes and gives
+#     approximately equal volumetric event density / intensity.
+#
+# "criterion2_graded_intensity"
+#     Both subsources receive exactly the same number of events.
+#     Different diameters therefore create different volumetric
+#     event densities / intensities.
+#
+#     IMPORTANT:
+#     If both subsources have the same diameter, they also have
+#     the same intensity because both their event counts and
+#     volumes are identical.
+
+intensityCriterion = "criterion1_equal_intensity"
+
+# For Criterion 2 an exactly equal split requires an even number
+# of events. With noOfEvents = 100, each subsource receives 50.
+# The simulation will raise an error if Criterion 2 is selected
+# with an odd noOfEvents value.
+
+
+# =========================================================
+# ALLOWED SOURCE REGION
+# =========================================================
+
+# Every complete spherical subsource must remain inside these
+# boundaries.
+#
+# The simulation automatically considers the radius of every
+# subsource when generating its centre.
+
+source_x_min = 0.0
+source_x_max = 49.0
+
+source_y_min = 0.0
+source_y_max = 49.0
+
+source_z_min = -150.0
+source_z_max = -100.0
+
+
+# =========================================================
+# SUBSOURCE GEOMETRY
+# =========================================================
+
+# Minimum surface-to-surface separation between the two spherical
+# subsources belonging to the SAME overall source, in millimetres.
+#
+# 0.0 means that spheres may touch, but they may not overlap.
+minimumSubSourceClearance = 0.0
+
+
+# Maximum random placement attempts for one subsource before the
+# simulation reports that the requested geometry could not be placed.
+maxPlacementAttempts = 100000
+
+
+# =========================================================
+# OUTPUT SETTINGS
+# =========================================================
+
+# Kaggle output directory.
+output_dir = "/kaggle/working/outputs"
+
+
+# Output CSV filename.
+
+criterion_label = (
+    "equal_intensity"
+    if intensityCriterion == "criterion1_equal_intensity"
+    else "graded_intensity"
+)
+
+file_name = (
+    "multisource_events_"
+    + str(noOfSources)
+    + "_"
+    + str(noOfEvents)
+    + "_2_subsources_"
+    + "diameters_"
+    + str(minSphereDiameter)
+    + "_to_"
+    + str(maxSphereDiameter)
+    + "_"
+    + criterion_label
+)
+
+ext = ".csv"
+
+
+# =========================================================
+# RANDOM SEED
+# =========================================================
+
+# Use an integer to obtain the same random data each time.
+# Use None to obtain different random data every time.
+randomSeed = 42
+
+
+# =========================================================
+# CONSTANT VALUES REQUIRED TO CALCULATE ELECTRON ENERGY
+# =========================================================
+
+initialEnergy_eV = 1  # 1 MeV in the original calculation convention
+
+initialEnergy_J = 1.602176634 * (10 ** (-13))
+
+h = 6.626 * (10 ** (-34))
+
+eMass_eV = 0.5109989461  # 0.511 MeV/c^2
+
+eMass_J = 9.109 * (10 ** (-31))
+
+c = 3.0 * (10 ** 8)
